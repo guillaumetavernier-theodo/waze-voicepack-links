@@ -23,7 +23,12 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.dirname(_here)
 DATA_PATH = os.path.join(_here, "waze_vps.json")
 QR_JS_PATH = os.path.join(_here, "qr.js")
+VALID_FILENAMES_PATH = os.path.join(_repo_root, "mp3_upload", "valid_waze_filenames.txt")
 OUTPUT_PATH = os.path.join(_repo_root, "docs", "index.html")
+
+# Waze's per-pack size limit, mirrored from mp3_upload/file_compression.py
+# (TARGET_FOLDER_SIZE = 0.795 MB, measured as bytes / 1024 / 1024).
+SIZE_LIMIT_MB = 0.795
 
 
 def _clean(value):
@@ -143,11 +148,53 @@ HTML_TEMPLATE = """<!doctype html>
   .toast { margin-top: 10px; color: var(--accent-ink); background: rgba(51,204,255,.22);
     border-radius: 8px; padding: 6px; font-size: 13px; }
   @media (prefers-color-scheme: dark) { .toast { color: #9fe4ff; } }
+  /* Header row + create button */
+  .header-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .create-btn { font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--border);
+    background: var(--accent); color: var(--accent-ink); border-radius: 10px; padding: 9px 14px; }
+  /* Import panel (create-from-mp3s) */
+  .sheet { position: fixed; inset: 0; background: var(--overlay); z-index: 60; display: flex;
+    align-items: flex-start; justify-content: center; padding: 24px 16px; overflow-y: auto; }
+  .sheet[hidden] { display: none; }
+  .sheet-box { background: var(--card); border-radius: 16px; padding: 22px; max-width: 620px; width: 100%;
+    position: relative; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+  .sheet-box h2 { margin: 0 30px 6px 0; font-size: 20px; }
+  .sheet-box .lead { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  .field { display: block; margin: 12px 0; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .field input[type=text] { width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+  .pickers { display: flex; gap: 8px; flex-wrap: wrap; }
+  .picker { position: relative; overflow: hidden; display: inline-flex; }
+  .picker input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .picker span { border: 1px solid var(--border); background: var(--bg); border-radius: 10px;
+    padding: 9px 14px; font-size: 14px; }
+  .report { margin-top: 16px; }
+  .report .stat { font-size: 14px; margin: 8px 0; }
+  .report .ok { color: #1a8f4c; } .report .warn { color: #b8860b; } .report .bad { color: #c0392b; }
+  @media (prefers-color-scheme: dark) { .report .ok { color: #5fd693; } .report .warn { color: #e2b23c; } .report .bad { color: #ff7a6b; } }
+  .filelist { list-style: none; padding: 0; margin: 6px 0; max-height: 220px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 10px; }
+  .filelist li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13px;
+    border-bottom: 1px solid var(--border); }
+  .filelist li:last-child { border-bottom: 0; }
+  .filelist .fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filelist .sz { color: var(--muted); white-space: nowrap; }
+  .filelist audio { height: 30px; }
+  .missing-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+  .missing-tags .chip { background: var(--chip); }
+  .publish { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
+  .publish pre { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; overflow-x: auto; font-size: 13px; }
+  .publish code { white-space: pre; }
 </style>
 </head>
 <body>
 <header>
-  <h1>🚗 Waze Voicepack Links</h1>
+  <div class="header-row">
+    <h1>🚗 Waze Voicepack Links</h1>
+    <button id="createBtn" class="create-btn">＋ Create pack from mp3s</button>
+  </div>
   <p class="tagline">A community archive of classic &amp; custom Waze GPS voices. On your phone (with Waze installed) tap <strong>Install</strong>; on desktop, tap it for a scannable QR code.</p>
 </header>
 <div class="controls">
@@ -182,6 +229,31 @@ HTML_TEMPLATE = """<!doctype html>
       <button id="mcopy" class="btn-mp3">Copy link</button>
     </div>
     <div class="toast" id="mtoast" hidden>Link copied</div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet-box">
+    <button class="modal-close" id="sheetClose" aria-label="Close">&times;</button>
+    <h2 id="sheetTitle">Create a voicepack from mp3 files</h2>
+    <p class="lead">Pick the mp3 files (or a folder) for your pack. This checks them against
+      the filenames Waze recognizes and the pack size limit, right here in your browser — nothing
+      is uploaded. To mint a shareable Waze link, finish with the Python pipeline (steps shown below).</p>
+
+    <label class="field">
+      <span style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Pack name</span>
+      <input type="text" id="packName" placeholder="e.g. My Custom Voice" autocomplete="off">
+    </label>
+
+    <div class="pickers">
+      <label class="picker"><span>Choose mp3 files…</span>
+        <input type="file" id="fileInput" multiple accept=".mp3,audio/mpeg"></label>
+      <label class="picker"><span>Choose a folder…</span>
+        <input type="file" id="dirInput" webkitdirectory></label>
+    </div>
+
+    <div class="report" id="report" hidden></div>
+    <div class="publish" id="publish" hidden></div>
   </div>
 </div>
 
@@ -295,6 +367,118 @@ HTML_TEMPLATE = """<!doctype html>
     }
   });
 
+  // --- Create a pack from mp3 files (client-side validation + handoff) ---
+  (function importFeature() {
+    const VALID_FILENAMES = __VALIDNAMES__;
+    const SIZE_LIMIT_MB = __SIZELIMIT__;
+    // Match filenames exactly (case-sensitive), same as the Python pipeline.
+    const VALID = new Set(VALID_FILENAMES);
+    const LOWER = new Map(VALID_FILENAMES.map(n => [n.toLowerCase(), n]));
+    const sheet = document.getElementById("sheet");
+    const report = document.getElementById("report");
+    const publish = document.getElementById("publish");
+    const packName = document.getElementById("packName");
+    let objectUrls = [];
+
+    const openSheet = () => { sheet.hidden = false; };
+    const closeSheet = () => { sheet.hidden = true; };
+    document.getElementById("createBtn").addEventListener("click", openSheet);
+    document.getElementById("sheetClose").addEventListener("click", closeSheet);
+    sheet.addEventListener("click", e => { if (e.target === sheet) closeSheet(); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && !sheet.hidden) closeSheet(); });
+
+    function escHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    function fmtSize(b) {
+      if (b >= 1048576) return (b / 1048576).toFixed(2) + " MB";
+      if (b >= 1024) return (b / 1024).toFixed(1) + " KB";
+      return b + " B";
+    }
+    function sanitize(name) { return (name || "").trim().replace(/[\\/:*?"<>|]/g, "_") || "My Pack"; }
+
+    function handleFiles(fileList) {
+      objectUrls.forEach(u => URL.revokeObjectURL(u)); objectUrls = [];
+      const files = Array.from(fileList);
+      if (!packName.value && files.length && files[0].webkitRelativePath) {
+        const top = files[0].webkitRelativePath.split("/")[0];
+        if (top) packName.value = top;
+      }
+      const valid = [], ignored = []; const present = new Set();
+      for (const f of files) {
+        const base = f.name;
+        if (VALID.has(base)) {
+          valid.push({ name: base, size: f.size, file: f }); present.add(base);
+        } else {
+          const canon = base.toLowerCase().endsWith(".mp3") ? LOWER.get(base.toLowerCase()) : null;
+          ignored.push({ name: base, caseHint: (canon && canon !== base) ? canon : null });
+        }
+      }
+      const missing = VALID_FILENAMES.filter(n => !present.has(n));
+      const totalBytes = valid.reduce((a, f) => a + f.size, 0);
+      renderReport({ valid, ignored, missing, totalBytes, totalMB: totalBytes / 1048576 });
+      renderPublish(valid.length > 0);
+    }
+
+    function renderReport(r) {
+      const packValid = r.valid.length > 0;
+      const over = r.totalMB > SIZE_LIMIT_MB;
+      let html = "";
+      html += `<p class="stat ${packValid ? "ok" : "bad"}">${packValid ? "✓" : "✗"} ` +
+        `${r.valid.length} recognized Waze prompt file${r.valid.length === 1 ? "" : "s"}` +
+        (packValid ? "" : " — need at least one to make a valid pack") + `</p>`;
+      if (r.valid.length) html += `<ul class="filelist" id="validList"></ul>`;
+      html += `<p class="stat ${over ? "warn" : "ok"}">Pack size: ${fmtSize(r.totalBytes)} ` +
+        `(limit ${SIZE_LIMIT_MB} MB) — ${over ? "over the limit; the pipeline will compress it down" : "within the limit"}</p>`;
+      if (r.missing.length) {
+        html += `<p class="stat warn">⚠ ${r.missing.length} prompt${r.missing.length === 1 ? "" : "s"} missing (will be silent/omitted):</p>`;
+        html += `<div class="missing-tags">` + r.missing.map(n => `<span class="chip">${escHtml(n)}</span>`).join("") + `</div>`;
+      }
+      if (r.ignored.length) {
+        html += `<p class="stat">ℹ ${r.ignored.length} file${r.ignored.length === 1 ? "" : "s"} ignored (not recognized Waze prompts): ` +
+          r.ignored.slice(0, 12).map(i => escHtml(i.name)).join(", ") + (r.ignored.length > 12 ? "…" : "") + `</p>`;
+        const hints = r.ignored.filter(i => i.caseHint);
+        if (hints.length) {
+          html += `<p class="stat warn">↳ ${hints.length} look like a prompt but have the wrong case — Waze needs an exact match, so rename:</p>`;
+          html += `<ul class="filelist">` + hints.map(i =>
+            `<li><span class="fn">${escHtml(i.name)}</span><span class="sz">→ ${escHtml(i.caseHint)}</span></li>`).join("") + `</ul>`;
+        }
+      }
+      report.innerHTML = html; report.hidden = false;
+      if (r.valid.length) {
+        const ul = document.getElementById("validList");
+        r.valid.sort((a, b) => a.name.localeCompare(b.name));
+        for (const v of r.valid) {
+          const url = URL.createObjectURL(v.file); objectUrls.push(url);
+          const li = document.createElement("li");
+          li.innerHTML = `<span class="fn">${escHtml(v.name)}</span><span class="sz">${fmtSize(v.size)}</span>`;
+          const audio = document.createElement("audio");
+          audio.controls = true; audio.preload = "none"; audio.src = url;
+          li.appendChild(audio); ul.appendChild(li);
+        }
+      }
+    }
+
+    function renderPublish(show) {
+      if (!show) { publish.hidden = true; publish.innerHTML = ""; return; }
+      const name = sanitize(packName.value);
+      publish.hidden = false;
+      publish.innerHTML =
+        `<h3 style="margin:0 0 8px;font-size:15px">Publish it (get a shareable Waze link)</h3>` +
+        `<p class="stat" style="color:var(--muted)">A web page can't upload to Waze's servers, so the link is minted with the repo's Python pipeline:</p>` +
+        `<pre><code># 1. Put these mp3s in a folder named after the pack:\n` +
+        `mp3_upload/input_packs/${escHtml(name)}/\n\n` +
+        `# 2. Install ffmpeg + the Python deps (requirements.txt), then run:\n` +
+        `python mp3_upload/main.py\n\n` +
+        `# 3. On success it prints your https://waze.com/ul?acvp=... link.</code></pre>` +
+        `<p class="stat" style="color:var(--muted)">Then add it to this archive by editing <code>helper_files/waze_vps.json</code> and re-running <code>helper_files/site_generator.py</code>.</p>`;
+    }
+
+    document.getElementById("fileInput").addEventListener("change", e => handleFiles(e.target.files));
+    document.getElementById("dirInput").addEventListener("change", e => handleFiles(e.target.files));
+    packName.addEventListener("input", () => { if (!publish.hidden) renderPublish(true); });
+  })();
+
   qEl.addEventListener("input", e => { state.q = e.target.value; render(); });
   langEl.addEventListener("change", e => { state.lang = e.target.value; render(); });
   catGroup.addEventListener("click", e => {
@@ -312,16 +496,27 @@ HTML_TEMPLATE = """<!doctype html>
 """
 
 
+def load_valid_filenames(path: str = VALID_FILENAMES_PATH) -> list:
+    """Read the canonical Waze prompt filenames (one per line)."""
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
 def generate_site(data_path: str = DATA_PATH, qr_js_path: str = QR_JS_PATH,
                   output_path: str = OUTPUT_PATH) -> int:
     with open(data_path, "r", encoding="utf-8") as f:
         waze_vps = json.load(f)
     with open(qr_js_path, "r", encoding="utf-8") as f:
         qr_js = f.read()
+    valid_filenames = load_valid_filenames()
 
     records = build_records(waze_vps)
     data_json = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
-    html = HTML_TEMPLATE.replace("__QRJS__", qr_js).replace("__DATA__", data_json)
+    html = (HTML_TEMPLATE
+            .replace("__QRJS__", qr_js)
+            .replace("__DATA__", data_json)
+            .replace("__VALIDNAMES__", json.dumps(valid_filenames, ensure_ascii=False))
+            .replace("__SIZELIMIT__", repr(SIZE_LIMIT_MB)))
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
