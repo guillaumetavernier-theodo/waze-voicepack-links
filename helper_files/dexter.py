@@ -100,8 +100,10 @@ def main(download_all=False):
                 # delete the zip file after successful download and extraction
                 os.remove(os.path.join(helper_files_dir, "downloaded_packs", f"{i}.zip"))
 
-                # if the primary language is not "en", delete the extracted folder
-                if primary_language != "en" and not download_all:
+                # If the primary language is a confident non-English detection,
+                # delete the extracted folder. In the light build (no Whisper)
+                # language is "unknown", so packs are kept rather than deleted.
+                if primary_language not in ("en", "unknown") and not download_all:
                     try:
                         shutil.rmtree(extracted_path)
                         print(f"Deleted non-English pack: {i}.zip")

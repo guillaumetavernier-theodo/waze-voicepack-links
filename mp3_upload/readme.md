@@ -23,6 +23,9 @@ An example of a successful upload from the script
 1. Place your mp3 pack(s) in the `mp3-upload/input-packs/` folder
 - each "pack" is a folder containing all of the mp3 files you want to upload together. The folder name will be used as the name of the uploaded voicepack
 2. Configure your python environment using the `requirements.txt` file
+
+> **Light build note:** This fork removes the `openai-whisper` dependency (which pulled in PyTorch, hundreds of MB). Automatic voice-language detection is gone; `helper_files/mp3_language_detector.py` now returns `"unknown"` and language is a **manual field** you fill in when cataloguing a pack. The ingestion → compression → upload pipeline is unaffected.
+
 3. Install ffmpeg on your system if you don't have it already - this is used for file compression and validation
 4. Run the `mp3_upload/main.py` script using the configured python environment and follow the progress through each step. If everything is successful, you will see a link to your uploaded voicepack in the console output
 
