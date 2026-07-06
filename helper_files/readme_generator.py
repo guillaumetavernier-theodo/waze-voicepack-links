@@ -74,7 +74,7 @@ def generate_community_voicepacks_markdown_table(waze_vps_json) -> str:
     
     return markdown_table
 
-intro_string = """# Waze Voicepack Links
+intro_string = r"""# Waze Voicepack Links
 
 A community-maintained archive of classic and custom Waze GPS voices — all in one place.
 
@@ -108,17 +108,56 @@ The full, searchable list of voicepacks now lives in a lightweight, zero-depende
 web app instead of a giant table in this README. It supports search, language and
 Official/Community filters, and shows a scannable QR code for each pack on desktop.
 
-- **Open it locally:** open [`docs/index.html`](docs/index.html) in your browser, or
-  serve the repo with `python -m http.server` and visit `/docs/`.
-- **Create packs from the app:** run `python serve.py` (a small stdlib bridge server)
-  instead of a plain static server. Its **＋ Create pack from mp3s** button validates
-  your mp3s and — with ffmpeg and the `requirements.txt` packages installed — runs the
-  full ingestion → compression → Waze upload pipeline and adds the resulting link to
-  your local list.
-- The app is generated from [`helper_files/waze_vps.json`](helper_files/waze_vps.json)
-  (the single source of truth) by
-  [`helper_files/site_generator.py`](helper_files/site_generator.py). **Re-run that
-  script after editing the JSON** to refresh the page (see below).
+### Just browse (no setup)
+
+Open [`docs/index.html`](docs/index.html) directly in your browser, or serve it with
+`python -m http.server` and visit `/docs/`. No dependencies required.
+
+### Launch with pack creation (uploads to Waze)
+
+The **＋ Create pack from mp3s** button runs the full ingestion → compression → Waze
+upload pipeline. That needs the local bridge server (`serve.py`), **ffmpeg**, and a few
+Python packages. Set it up once:
+
+**macOS / Linux**
+
+```bash
+# ffmpeg:  macOS -> brew install ffmpeg   |   Debian/Ubuntu -> sudo apt install ffmpeg
+brew install ffmpeg
+
+python3 -m venv .venv
+.venv/bin/pip install pydub requests blackboxprotobuf protobuf
+.venv/bin/pip install audioop-lts                 # only on Python 3.13+
+
+.venv/bin/python helper_files/site_generator.py   # (re)build the app
+.venv/bin/python serve.py                          # -> http://127.0.0.1:8912/
+```
+
+**Windows (PowerShell)**
+
+```powershell
+winget install Gyan.FFmpeg                 # or: choco install ffmpeg  (then reopen the shell)
+
+python -m venv .venv
+.venv\Scripts\pip install pydub requests blackboxprotobuf protobuf
+.venv\Scripts\pip install audioop-lts       # only on Python 3.13+
+
+.venv\Scripts\python helper_files\site_generator.py   # (re)build the app
+.venv\Scripts\python serve.py                          # -> http://127.0.0.1:8912/
+```
+
+> **Notes**
+> - `openai-whisper` in `requirements.txt` is **not** needed for the app or for uploads
+>   (it pulls in PyTorch). The four packages above are all the pipeline requires.
+> - `audioop-lts` is only required on **Python 3.13+**, where the stdlib `audioop`
+>   module that `pydub` relies on was removed.
+> - Launch `serve.py` with the **venv's** Python (as shown) — it runs the pipeline as a
+>   subprocess using that same interpreter, so the packages must be visible to it.
+
+The app is generated from [`helper_files/waze_vps.json`](helper_files/waze_vps.json)
+(the single source of truth) by
+[`helper_files/site_generator.py`](helper_files/site_generator.py). **Re-run that
+script after editing the JSON** to refresh the page.
 
 ---
 
