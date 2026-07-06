@@ -34,6 +34,11 @@ Official/Community filters, and shows a scannable QR code for each pack on deskt
 
 - **Open it locally:** open [`docs/index.html`](docs/index.html) in your browser, or
   serve the repo with `python -m http.server` and visit `/docs/`.
+- **Create packs from the app:** run `python serve.py` (a small stdlib bridge server)
+  instead of a plain static server. Its **＋ Create pack from mp3s** button validates
+  your mp3s and — with ffmpeg and the `requirements.txt` packages installed — runs the
+  full ingestion → compression → Waze upload pipeline and adds the resulting link to
+  your local list.
 - The app is generated from [`helper_files/waze_vps.json`](helper_files/waze_vps.json)
   (the single source of truth) by
   [`helper_files/site_generator.py`](helper_files/site_generator.py). **Re-run that

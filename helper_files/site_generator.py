@@ -119,7 +119,11 @@ HTML_TEMPLATE = """<!doctype html>
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--muted); }
   .chip.cat-Official { background: rgba(51,204,255,.18); color: var(--accent-ink); }
-  @media (prefers-color-scheme: dark) { .chip.cat-Official { color: #9fe4ff; } }
+  .chip.cat-Imported { background: rgba(26,143,76,.18); color: #1a8f4c; }
+  @media (prefers-color-scheme: dark) {
+    .chip.cat-Official { color: #9fe4ff; }
+    .chip.cat-Imported { color: #5fd693; }
+  }
   .chip a { color: inherit; text-decoration: none; }
   .notes { color: var(--muted); font-size: 13px; margin: 0; }
   .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; }
@@ -244,6 +248,10 @@ HTML_TEMPLATE = """<!doctype html>
       <span style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Pack name</span>
       <input type="text" id="packName" placeholder="e.g. My Custom Voice" autocomplete="off">
     </label>
+    <label class="field">
+      <span style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Language (optional)</span>
+      <input type="text" id="packLang" placeholder="e.g. English" autocomplete="off">
+    </label>
 
     <div class="pickers">
       <label class="picker"><span>Choose mp3 files…</span>
@@ -260,7 +268,13 @@ HTML_TEMPLATE = """<!doctype html>
 <script>__QRJS__</script>
 <script id="data" type="application/json">__DATA__</script>
 <script>
-  const DATA = JSON.parse(document.getElementById("data").textContent);
+  const BASE_DATA = JSON.parse(document.getElementById("data").textContent);
+  const IMPORTED_KEY = "wvp_imported";
+  function loadImported() {
+    try { return JSON.parse(localStorage.getItem(IMPORTED_KEY) || "[]"); }
+    catch (e) { return []; }
+  }
+  let DATA = BASE_DATA.concat(loadImported());
   const grid = document.getElementById("grid");
   const empty = document.getElementById("empty");
   const countEl = document.getElementById("count");
@@ -281,6 +295,7 @@ HTML_TEMPLATE = """<!doctype html>
   }
 
   function render() {
+    document.getElementById("total").textContent = DATA.length;
     const q = state.q.trim().toLowerCase();
     const rows = DATA.filter(d =>
       (state.cat === "all" || d.category === state.cat) &&
@@ -379,8 +394,21 @@ HTML_TEMPLATE = """<!doctype html>
     const publish = document.getElementById("publish");
     const packName = document.getElementById("packName");
     let objectUrls = [];
+    let lastValid = [];
+    let bridge = { checked: false, available: false, ffmpeg: false };
 
-    const openSheet = () => { sheet.hidden = false; };
+    async function healthCheck() {
+      try {
+        const r = await fetch("api/health", { cache: "no-store" });
+        const j = await r.json();
+        bridge = { checked: true, available: true, ffmpeg: !!j.ffmpeg };
+      } catch (e) {
+        bridge = { checked: true, available: false, ffmpeg: false };
+      }
+      if (!publish.hidden) renderPublish(lastValid.length > 0);
+    }
+
+    const openSheet = () => { sheet.hidden = false; healthCheck(); };
     const closeSheet = () => { sheet.hidden = true; };
     document.getElementById("createBtn").addEventListener("click", openSheet);
     document.getElementById("sheetClose").addEventListener("click", closeSheet);
@@ -416,6 +444,7 @@ HTML_TEMPLATE = """<!doctype html>
       }
       const missing = VALID_FILENAMES.filter(n => !present.has(n));
       const totalBytes = valid.reduce((a, f) => a + f.size, 0);
+      lastValid = valid;
       renderReport({ valid, ignored, missing, totalBytes, totalMB: totalBytes / 1048576 });
       renderPublish(valid.length > 0);
     }
@@ -459,19 +488,81 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
-    function renderPublish(show) {
-      if (!show) { publish.hidden = true; publish.innerHTML = ""; return; }
-      const name = sanitize(packName.value);
-      publish.hidden = false;
-      publish.innerHTML =
-        `<h3 style="margin:0 0 8px;font-size:15px">Publish it (get a shareable Waze link)</h3>` +
-        `<p class="stat" style="color:var(--muted)">A web page can't upload to Waze's servers, so the link is minted with the repo's Python pipeline:</p>` +
+    function manualInstructionsHtml(name) {
+      return `<h3 style="margin:0 0 8px;font-size:15px">Publish it (get a shareable Waze link)</h3>` +
+        `<p class="stat" style="color:var(--muted)">Run the repo's bridge server (<code>python serve.py</code>) to create the link from here, or do it manually:</p>` +
         `<pre><code># 1. Put these mp3s in a folder named after the pack:\n` +
         `mp3_upload/input_packs/${escHtml(name)}/\n\n` +
         `# 2. Install ffmpeg + the Python deps (requirements.txt), then run:\n` +
         `python mp3_upload/main.py\n\n` +
-        `# 3. On success it prints your https://waze.com/ul?acvp=... link.</code></pre>` +
-        `<p class="stat" style="color:var(--muted)">Then add it to this archive by editing <code>helper_files/waze_vps.json</code> and re-running <code>helper_files/site_generator.py</code>.</p>`;
+        `# 3. On success it prints your https://waze.com/ul?acvp=... link.</code></pre>`;
+    }
+
+    function renderPublish(show) {
+      if (!show) { publish.hidden = true; publish.innerHTML = ""; return; }
+      const name = sanitize(packName.value);
+      publish.hidden = false;
+      if (bridge.available && bridge.ffmpeg) {
+        publish.innerHTML =
+          `<h3 style="margin:0 0 8px;font-size:15px">Create the link</h3>` +
+          `<p class="stat" style="color:var(--muted)">Runs ingestion → compression → Waze upload through the local bridge, then adds the link to the list below. This can take a bit.</p>` +
+          `<button id="uploadBtn" class="create-btn">⬆ Upload &amp; create link</button>` +
+          `<div class="stat" id="uploadStatus" style="margin-top:10px"></div>`;
+        document.getElementById("uploadBtn").addEventListener("click", doUpload);
+      } else {
+        const banner = (bridge.available && !bridge.ffmpeg)
+          ? `<p class="stat bad">Bridge server is running but ffmpeg wasn't found — install ffmpeg and restart <code>serve.py</code> to create links from here.</p>`
+          : "";
+        publish.innerHTML = banner + manualInstructionsHtml(name);
+      }
+    }
+
+    function fileToB64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => { const s = String(r.result); resolve(s.slice(s.indexOf(",") + 1)); };
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+
+    function addImported(name, lang, link) {
+      const uuid = (link.match(/acvp=([0-9a-fA-F-]+)/) || [])[1] || "";
+      const rec = { name: name, language: lang || "Unknown", category: "Imported",
+        install: link, mp3: "https://voice-prompts-ipv6.waze.com/" + uuid + ".tar.gz",
+        notes: "Created locally via the pipeline", blog: "", author: "", author_link: "", imported: true };
+      const arr = loadImported(); arr.push(rec);
+      localStorage.setItem(IMPORTED_KEY, JSON.stringify(arr));
+      DATA.push(rec); render();
+    }
+
+    async function doUpload() {
+      const btn = document.getElementById("uploadBtn");
+      const status = document.getElementById("uploadStatus");
+      const name = sanitize(packName.value);
+      const lang = (document.getElementById("packLang").value || "").trim();
+      if (!lastValid.length) { status.innerHTML = `<span class="bad">Add at least one recognized prompt first.</span>`; return; }
+      btn.disabled = true;
+      status.textContent = "Uploading & running the pipeline… (compression + upload can take a bit)";
+      try {
+        const files = await Promise.all(lastValid.map(async v => ({ filename: v.name, b64: await fileToB64(v.file) })));
+        const resp = await fetch("api/create-pack", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, files: files }) });
+        const data = await resp.json();
+        if (!data.ok) { status.innerHTML = `<span class="bad">❌ ${escHtml(data.error || "Failed")}</span>`; btn.disabled = false; return; }
+        const made = (data.results || []).filter(r => r.link);
+        if (!made.length) {
+          const err = (data.results && data.results[0] && data.results[0].error) || "No link was produced.";
+          status.innerHTML = `<span class="bad">❌ ${escHtml(err)}</span>`; btn.disabled = false; return;
+        }
+        made.forEach(r => addImported(name, lang, r.link));
+        status.innerHTML = `<span class="ok">✅ Created and added to the list below:</span><br>` +
+          made.map(r => `<a href="${escHtml(r.link)}" target="_blank" rel="noopener">${escHtml(r.link)}</a>`).join("<br>");
+      } catch (e) {
+        status.innerHTML = `<span class="bad">❌ ${escHtml(String(e))} — is the bridge server running (python serve.py)?</span>`;
+        btn.disabled = false;
+      }
     }
 
     document.getElementById("fileInput").addEventListener("change", e => handleFiles(e.target.files));
